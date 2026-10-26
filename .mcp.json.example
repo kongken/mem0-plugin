@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "mem0-oss": {
+      "command": "/absolute/path/to/mem0-plugin/bin/mem0-oss",
+      "args": ["mcp"]
+    }
+  }
+}

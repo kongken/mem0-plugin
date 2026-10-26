@@ -1,0 +1,8 @@
+{
+  "name": "mem0-oss",
+  "version": "0.3.0",
+  "description": "把 Cursor 的记忆接到自建的 mem0 OSS server 上:对话自动捕获,MCP 工具主动召回,不经过 Mem0 Platform。",
+  "hooks": "./cursor/hooks.json",
+  "skills": "./skills/",
+  "rules": "./cursor/rules/"
+}

@@ -1,0 +1,11 @@
+{
+  "name": "mem0-plugin",
+  "owner": { "name": "kongken", "url": "https://github.com/kongken" },
+  "plugins": [
+    {
+      "name": "mem0-oss",
+      "source": "./",
+      "description": "self-hosted mem0 的 Claude Code 集成(hooks 层)"
+    }
+  ]
+}

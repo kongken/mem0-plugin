@@ -1,0 +1,10 @@
+{
+  "name": "mem0-oss",
+  "version": "0.3.0",
+  "description": "把 Claude Code 的记忆接到自建的 mem0 OSS server 上:每轮对话自动捕获,每次输入自动召回,不经过 Mem0 Platform。",
+  "author": { "name": "kongken" },
+  "homepage": "https://github.com/kongken/mem0-plugin",
+  "repository": "https://github.com/kongken/mem0-plugin",
+  "license": "MIT",
+  "keywords": ["memory", "mem0", "self-hosted", "oss", "semantic-search"]
+}

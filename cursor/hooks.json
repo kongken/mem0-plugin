@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "command": "\"{{MEM0_OSS_BIN}}\" cursor-hook session-start",
+        "timeout": 5
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "type": "command",
+        "command": "\"{{MEM0_OSS_BIN}}\" cursor-hook before-submit-prompt",
+        "timeout": 5
+      }
+    ],
+    "afterAgentResponse": [
+      {
+        "type": "command",
+        "command": "\"{{MEM0_OSS_BIN}}\" cursor-hook after-agent-response",
+        "timeout": 10
+      }
+    ]
+  }
+}
