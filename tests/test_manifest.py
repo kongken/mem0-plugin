@@ -211,3 +211,41 @@ class TestCursorRule(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPiPackageJson(unittest.TestCase):
+    def setUp(self):
+        self.data = read_json("package.json")
+
+    def test_declared_as_a_pi_package(self):
+        self.assertIn("pi-package", self.data["keywords"])
+        self.assertEqual(self.data["name"], "mem0-oss")
+
+    def test_version_synced_with_claude_manifest(self):
+        self.assertEqual(
+            self.data["version"],
+            read_json(".claude-plugin", "plugin.json")["version"],
+        )
+
+    def test_extension_and_skill_paths_exist(self):
+        for rel in self.data["pi"]["extensions"]:
+            self.assertTrue(os.path.isfile(os.path.join(ROOT, rel)), rel)
+        for rel in self.data["pi"]["skills"]:
+            path = os.path.join(ROOT, rel)
+            self.assertTrue(
+                os.path.isfile(os.path.join(path, "mem0", "SKILL.md")), rel
+            )
+
+    def test_host_provided_packages_are_peers_not_dependencies(self):
+        # pi 自己提供这些包;放进 dependencies 会装出第二份实例
+        self.assertNotIn("dependencies", self.data)
+        self.assertIn("@earendil-works/pi-coding-agent", self.data["peerDependencies"])
+
+    def test_extension_shells_out_to_the_pi_hook_subcommand(self):
+        with open(
+            os.path.join(ROOT, self.data["pi"]["extensions"][0]), encoding="utf-8"
+        ) as handle:
+            source = handle.read()
+        self.assertIn('"pi-hook"', source)
+        for event in ("session-start", "user-prompt", "agent-end"):
+            self.assertIn('"%s"' % event, source)
