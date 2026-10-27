@@ -13,7 +13,7 @@ import sys
 
 from . import client as client_mod
 from . import config as config_mod
-from . import cursor_hooks, hooks, installer, mcp_server, privacy
+from . import cursor_hooks, hooks, installer, mcp_server, pi_hooks, privacy
 
 CLOUD_KEY_PREFIX = "m0-"
 OSS_KEY_PREFIX = "m0sk_"
@@ -30,6 +30,12 @@ _CURSOR_HANDLERS = {
     "before-submit-prompt": cursor_hooks.before_submit_prompt,
     "after-agent-response": cursor_hooks.after_agent_response,
     "session-start": cursor_hooks.session_start,
+}
+
+_PI_HANDLERS = {
+    "session-start": pi_hooks.session_start,
+    "user-prompt": pi_hooks.user_prompt,
+    "agent-end": pi_hooks.agent_end,
 }
 
 _ALWAYS_ALLOW = {"continue": True}
@@ -60,6 +66,22 @@ def _run_cursor_hook(event):
         result = _ALWAYS_ALLOW
     if result is not None:
         sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
+    return 0
+
+
+def _run_pi_hook(event):
+    """pi 侧的 fail-open:任何失败都收敛成 exit 0 且不输出。
+
+    调用方是 pi 进程内的扩展,它把"没有输出"理解为"没有可注入的内容"。
+    """
+    try:
+        payload = _read_stdin_json()
+        if payload is not None:
+            result = _PI_HANDLERS[event](config_mod.load(), payload)
+            if result is not None:
+                sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
+    except BaseException as exc:  # noqa: BLE001
+        _log_crash_safely("pi hook %s crashed: %s" % (event, exc))
     return 0
 
 
@@ -242,6 +264,9 @@ def _build_parser():
     cursor_parser = subparsers.add_parser("cursor-hook", help="供 Cursor hooks 调用")
     cursor_parser.add_argument("event", choices=sorted(_CURSOR_HANDLERS))
 
+    pi_parser = subparsers.add_parser("pi-hook", help="供 pi 扩展调用")
+    pi_parser.add_argument("event", choices=sorted(_PI_HANDLERS))
+
     subparsers.add_parser("status", help="配置与连通性体检")
     subparsers.add_parser("profile", help="列出当前作用域的全部记忆")
     subparsers.add_parser("mcp", help="起 stdio MCP server(供宿主 MCP 配置调用)")
@@ -297,7 +322,7 @@ def main(argv=None):
         # 绕得过 _run_hook 的 except Exception。hook 路径必须压成 0:
         # UserPromptSubmit 上的非零退出会抹掉用户刚敲的那条 prompt,
         # 一个 hooks.json 里的拼写错误不该有这种后果。
-        if argv and argv[0] in ("hook", "cursor-hook"):
+        if argv and argv[0] in ("hook", "cursor-hook", "pi-hook"):
             if argv[0] == "cursor-hook":
                 # 连事件名都解析不出来,只能按最保守口径恒放行
                 sys.stdout.write(json.dumps(_ALWAYS_ALLOW) + "\n")
@@ -313,6 +338,9 @@ def main(argv=None):
 
     if args.command == "cursor-hook":
         return _run_cursor_hook(args.event)
+
+    if args.command == "pi-hook":
+        return _run_pi_hook(args.event)
 
     # argparse 的 nargs="+" 收成列表,拼回原始文本
     if hasattr(args, "query"):

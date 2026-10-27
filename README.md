@@ -1,8 +1,8 @@
 # mem0-oss
 
-把 Claude Code / Codex / Cursor 的记忆接到**自建的 mem0 OSS server** 上,三个宿主共享同一个 self-hosted 记忆库,全程不经过 Mem0 Platform。Claude Code 与 Codex 每次输入自动召回、每轮对话自动捕获;Cursor 受宿主限制做不到自动召回(原因见下文能力矩阵),捕获仍然全自动。
+把 Claude Code / Codex / Cursor / pi 的记忆接到**自建的 mem0 OSS server** 上,四个宿主共享同一个 self-hosted 记忆库,全程不经过 Mem0 Platform。Claude Code、Codex 与 pi 每次输入自动召回、每轮对话自动捕获;Cursor 受宿主限制做不到自动召回(原因见下文能力矩阵),捕获仍然全自动。
 
-官方的 mem0 plugin(Claude Code 和 Codex 各有一个)都是 cloud-only 的 —— 端点硬编码 `api.mem0.ai` 和 `mcp.mem0.ai`,没有 base URL 覆盖开关。这个插件补的是 self-hosted 那条路,一份核心代码撑三个宿主。
+官方的 mem0 plugin(Claude Code 和 Codex 各有一个)都是 cloud-only 的 —— 端点硬编码 `api.mem0.ai` 和 `mcp.mem0.ai`,没有 base URL 覆盖开关。这个插件补的是 self-hosted 那条路,一份核心代码撑四个宿主。
 
 ## 前置条件
 
@@ -73,20 +73,41 @@ bin/mem0-oss install cursor --project
 
 这会把 rule 写到**当前项目**的 `.cursor/rules/mem0-oss.mdc`,而不是用户级目录(hooks 与 MCP 配置仍然写用户级,不受这个开关影响)。**卸载要用同一个开关:** 用 `--project` 装的 rule 只有 `bin/mem0-oss uninstall cursor --project` 才会摘掉;不带这个参数卸载,项目目录里的 rule 文件会留在原地。
 
-## 三宿主能力矩阵
+### pi
 
-| 能力 | Claude Code | Codex | Cursor |
-|---|---|---|---|
-| 每轮输入自动召回注入 | ✅ hooks | ✅ hooks(在共享块上限之上,宿主自己还会截到约 2500 token,见表下说明) | ❌(宿主不支持;由 MCP 工具 + alwaysApply rule 承担主动召回) |
-| 轮结束自动捕获 | ✅ | ✅ | ✅(beforeSubmitPrompt + afterAgentResponse 配对) |
-| 手动命令 | `/mem0` | skill(调用语法待实测) | skill(调用语法待实测) |
-| MCP 工具 | 可选(`.mcp.json`) | 可选(`config.toml`) | ✅(install 自动配置) |
+pi 的扩展是进程内的 TypeScript 模块,本仓库根目录就是一个 pi package(`package.json` 里的 `pi` 字段声明了扩展与 skill):
+
+```bash
+pi install git:github.com/kongken/mem0-plugin
+```
+
+只想试一次、不写进配置的话用 `pi -e git:github.com/kongken/mem0-plugin`;本地开发直接 `pi -e ./`(在仓库根)。装好后重启 pi 生效,环境变量见下文「配置 › pi」。
+
+扩展本身只做事件翻译,真正的召回、脱敏、暂存、配对、捕获都在 `bin/mem0-oss pi-hook <事件>` 里,与其他宿主共用同一份 Python 核心 —— 所以需要 `python3`(3.9+)在 PATH 上(Windows 上用 `python`;也可以用 `MEM0_OSS_PYTHON` 指定解释器,`MEM0_OSS_BIN` 指定 `mem0-oss` 入口)。
+
+- `session_start`:认证探活,服务端拒绝认证时用 `notify` 提醒一次
+- `before_agent_start`:`POST /search` 召回,结果作为**不显示**的自定义消息(`customType: mem0-recall`)注入本轮;同时暂存脱敏后的 prompt
+- `context`:只保留最新一条召回消息,旧的不随会话历史累积
+- `agent_end`:取最后一条正常结束的 assistant 文本,与暂存的 prompt 配对后异步写入;被中断或出错的一轮不写
+
+手动命令走 `skills/mem0/SKILL.md`(pi 的 skill 机制,同一份 skill 与 Codex / Cursor 共用)。**没有**随扩展提供 MCP 工具 —— pi 的 MCP 支持只在较新的版本里有,而自动召回已经覆盖主流程。
+
+**共存注意:** 如果装了别的 pi 记忆扩展(比如 `@mem0/pi-agent-plugin` 或 `@amaster.ai/pi-memory-mem0`),先 `pi remove` 掉,否则每轮会被两个扩展重复召回、重复捕获;官方那个还会把对话发往 Mem0 Platform。
+
+## 四宿主能力矩阵
+
+| 能力 | Claude Code | Codex | Cursor | pi |
+|---|---|---|---|---|
+| 每轮输入自动召回注入 | ✅ hooks | ✅ hooks(在共享块上限之上,宿主自己还会截到约 2500 token,见表下说明) | ❌(宿主不支持;由 MCP 工具 + alwaysApply rule 承担主动召回) | ✅ 扩展(`before_agent_start` 注入隐藏的自定义消息) |
+| 轮结束自动捕获 | ✅ | ✅ | ✅(beforeSubmitPrompt + afterAgentResponse 配对) | ✅(`agent_end`) |
+| 手动命令 | `/mem0` | skill(调用语法待实测) | skill(调用语法待实测) | skill(`/skill:mem0`,见 pi 文档) |
+| MCP 工具 | 可选(`.mcp.json`) | 可选(`config.toml`) | ✅(install 自动配置) | ❌(不随扩展提供) |
 
 召回块本身有一个宿主无关的硬上限 —— 8 KiB / 50 行(`lib/mem0_oss/hooks.py` 的 `MAX_BLOCK_BYTES` / `MAX_BLOCK_LINES`,在 `format_recall_block` 里应用)。Claude Code 与 Codex 走的是同一个 `hooks.user_prompt`(`--host` 只改捕获记忆的 `metadata.source`,不改召回逻辑),这个上限对两边一样。Codex 在这之上还会在自己那一侧再截一刀:注入上限约 2500 token(`additionalContextLimit`)。块超限时接受被 Codex 截尾,不做 host 特判 —— 块头的关键信息在前,截尾无害。
 
 ## 配置
 
-一套 `MEM0_*` 环境变量三宿主通用,只是注入方式因宿主而异。
+一套 `MEM0_*` 环境变量四宿主通用,只是注入方式因宿主而异。
 
 ### Claude Code
 
@@ -112,6 +133,17 @@ Cursor 的 hooks 与 MCP 进程继承的是启动 Cursor 那个进程的环境�
 
 - 从终端启动 Cursor:比如 `MEM0_BASE_URL=http://your-mem0-server:8888 cursor .`,或者把变量写进 shell 启动文件后照常敲 `cursor .`;
 - 全局设置一次:`launchctl setenv MEM0_BASE_URL http://your-mem0-server:8888`(对当前登录 session 全局生效,GUI 应用也能读到;设置后要重启 Cursor 才生效,注销或重启电脑后失效,要长期生效得自己包一层 LaunchAgent)。
+
+### pi
+
+pi 扩展跑在 pi 进程里,调 Python 核心时把当前环境原样传过去,所以环境变量的写法同 Codex:写进 shell 启动文件,从那个 shell 里启动 `pi`。扩展额外认两个只属于它的变量:
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `MEM0_OSS_PYTHON` | `python3`(Windows 上 `python`) | 运行 `mem0-oss` 用的解释器 |
+| `MEM0_OSS_BIN` | 仓库自带的 `bin/mem0-oss` | `mem0-oss` 入口的路径 |
+
+`MEM0_BASE_URL` 未设置时扩展不注册任何事件处理器,等于没装。
 
 ---
 
@@ -148,7 +180,7 @@ Cursor 的 hooks 与 MCP 进程继承的是启动 Cursor 那个进程的环境�
 
 ## 命令
 
-底层是同一套子命令,三宿主共用。能直接在终端跑的是这个形式(从仓库根;放进 PATH 的话可以去掉 `bin/` 前缀):
+底层是同一套子命令,四宿主共用。能直接在终端跑的是这个形式(从仓库根;放进 PATH 的话可以去掉 `bin/` 前缀):
 
 ```
 bin/mem0-oss status              配置与连通性体检
@@ -158,7 +190,7 @@ bin/mem0-oss profile             列出当前作用域的全部记忆
 bin/mem0-oss delete <id>         按 id 删除
 ```
 
-Claude Code 里对应的是 `/mem0 <子命令>`(比如 `/mem0 status`),背后就是 `commands/mem0.md` 这条 slash command,调的还是上面这同一个 CLI。Codex 与 Cursor 走的是 `skills/mem0/SKILL.md` 这份共用 skill,指导模型自己去拼 `mem0-oss <子命令>`;但用户侧怎么触发这个 skill(`/mem0`、`/mem0-oss`、`$mem0`,还是别的写法)由各自宿主的 skill 加载机制决定,还没有实测确认过(见下文「已知待实测」)。
+Claude Code 里对应的是 `/mem0 <子命令>`(比如 `/mem0 status`),背后就是 `commands/mem0.md` 这条 slash command,调的还是上面这同一个 CLI。Codex、Cursor 与 pi 走的是 `skills/mem0/SKILL.md` 这份共用 skill,指导模型自己去拼 `mem0-oss <子命令>`;但用户侧怎么触发这个 skill(`/mem0`、`/mem0-oss`、`$mem0`,还是别的写法)由各自宿主的 skill 加载机制决定,还没有实测确认过(见下文「已知待实测」)。
 
 ## 它在什么时候做什么
 
@@ -167,6 +199,8 @@ Claude Code 里对应的是 `/mem0 <子命令>`(比如 `/mem0 status`),背后就
 | 会话开始(`SessionStart` / `sessionStart`) | 认证探活(查一个保证为空的作用域,不拉真实数据),清理陈旧的会话状态文件 | 同左;认证警告改走 `additional_context` 输出(见下文「已知待实测」,该通道有已知的注入丢失 bug,是 best-effort) |
 | 你提交输入(`UserPromptSubmit` / `beforeSubmitPrompt`) | `POST /search` 召回,包装后注入上下文;同时把这条输入脱敏后暂存,供会话结束时配对 | 只做暂存(脱敏后存入 state),不召回 —— `beforeSubmitPrompt` 只能 allow/block,没有注入通道;恒返回 `{"continue": true}`,包括发生内部异常时(这个 hook 有权抹掉用户输入,记忆功能不该有这个权力) |
 | 一轮结束(`Stop` / `afterAgentResponse`) | 把这轮 user+assistant 交给 `POST /memories`,由服务端 `infer` 抽取事实,异步写入,不阻塞会话结束 | 同左;assistant 文本取自 `text` 字段,与暂存的输入配对后写入,同样异步、无输出 |
+
+pi 的对应关系:`session_start` ↔ `SessionStart`,`before_agent_start` ↔ `UserPromptSubmit`(pi 能拿到 prompt 也能往本轮注入,所以和 Claude Code 一样召回),`agent_end` ↔ `Stop`;语义细节见上文「安装 › pi」。
 
 只挂了这三个事件(Codex 的 `codex/hooks.json` 同样只注册这三个)。按 Claude Code 的 hooks 文档,`PreCompact` 和 `TaskCompleted` 的 stdout 只进 debug log,不会进模型上下文 —— 若如此,挂在这两个事件上输出提示词等于什么都没做,而官方 mem0 plugin 恰恰挂了这两个事件。**这一条是从官方文档推出来的,本仓库还没有用 `claude --debug` 实测坐实**(spec §12 也把它列为待办)。即便结论有出入,也只影响「官方插件有多少提示词落空」这个判断,不影响本插件挂着的三个事件。Cursor 的事件模型完全不同(没有 `PreCompact`/`TaskCompleted` 的对应物),不适用这条推理。
 
@@ -202,7 +236,7 @@ Claude Code 里对应的是 `/mem0 <子命令>`(比如 `/mem0 status`),背后就
 bin/mem0-oss status
 ```
 
-三宿主都能跑这个形式(Claude Code 里也可以用 `/mem0 status`,`/mem0` 只存在于 Claude Code)。还看不出来就开 `MEM0_DEBUG=1`,诊断会打到 stderr(Claude Code 用 `claude --debug` 能看到;Codex/Cursor 看各自宿主的 hook/MCP 进程日志)。
+四宿主都能跑这个形式(Claude Code 里也可以用 `/mem0 status`,`/mem0` 只存在于 Claude Code)。还看不出来就开 `MEM0_DEBUG=1`,诊断会打到 stderr(Claude Code 用 `claude --debug` 能看到;Codex/Cursor 看各自宿主的 hook/MCP 进程日志;pi 的扩展把 stderr 丢弃,直接在终端跑 `MEM0_DEBUG=1 bin/mem0-oss pi-hook user-prompt < payload.json` 复现)。
 
 所有失败路径都是 fail-open:服务端挂了、超时了、认证错了,会话照常可用,只是没有记忆。唯一会主动出声的是服务端返回 401/403(比如密钥前缀配错),每会话提醒一次(Cursor 上这条提醒经 `additional_context` 送出,可能因为上面提到的注入丢失 bug 而不出现 —— 拿不准就直接跑 `bin/mem0-oss status`)。
 
@@ -213,3 +247,9 @@ python3 -m unittest discover -t . -s tests -p "test_*.py" -v
 ```
 
 零依赖,不需要虚拟环境,Python 3.9 起所有版本均可运行(CI 覆盖 3.9–3.14)。
+
+pi 扩展的测试用 node 自带的 test runner 直接跑 TypeScript(需要 Node 22.18+,同样零依赖,但会起真的 `python3 bin/mem0-oss`):
+
+```bash
+npm test
+```
